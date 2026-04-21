@@ -1,0 +1,74 @@
+name: 🔄
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  id-token: write
+  issues: write
+  pull-requests: write
+  statuses: read
+
+on:
+  schedule:
+    # Approximately every 2 weeks: 1st and 15th of every month at 00:00 UTC
+    - cron: "0 0 1,15 * *"
+  workflow_dispatch:
+
+jobs:
+  auto-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PROD_WRITE_REPO }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.BEDROCK_ROLE }}
+          aws-region: us-west-2
+
+      # Note: pinned to 1eddb334 (sdk@0.2.92) to work around SigV4 regression in sdk@0.2.94+
+      # see https://github.com/anthropics/claude-code/issues/45128
+      - uses: anthropics/claude-code-action@1eddb334
+        with:
+          github_token: ${{ secrets.PROD_WRITE_REPO }}
+          use_bedrock: "true"
+          prompt: |
+            Check whether the Dockerfile in this repository can be updated to newer versions.
+
+            ./Dockerfile has two things that may need updating:
+
+            1. Base image `rabbitmq:<tag>-management` — available tags:
+               https://hub.docker.com/_/rabbitmq/tags
+               Stay on the `-management` variant. Prefer the latest stable minor.
+            2. Plugin `rabbitmq-message-deduplication` — releases:
+               https://github.com/noxdafox/rabbitmq-message-deduplication/releases
+               The asset filename follows
+               `plugins-rmqv<rmq_minor>.x-erl<erlang_major>-elx<elixir_minor>.zip`.
+               Pick the asset whose RabbitMQ minor version matches the chosen base image.
+               The Erlang and Elixir versions baked into the `rabbitmq:<tag>-management`
+               image must also match the asset — inspect the image's release notes
+               if you need to confirm.
+
+            Procedure:
+            - Identify the current base image tag and plugin version in ./Dockerfile.
+            - Determine the latest compatible versions of both.
+            - If nothing is newer than what is already pinned, print
+              "no update needed" and exit without making any changes.
+            - Otherwise, update ./Dockerfile so that the `FROM` line, the plugin
+              download URL, and the versioned `.ez` filename on the `chown` /
+              `rabbitmq-plugins enable` lines are all consistent.
+            - Commit on a new branch named `auto-update/dockerfile-<YYYY-MM-DD>`,
+              push it, and open a pull request. The PR body must list the old
+              versions, the new versions, and link to the upstream release notes
+              / tag pages that justify the bump.
+            - Request reviews on the PR by running:
+              `gh pr edit <pr_number> --add-reviewer y-nk,yusufekaputera`
+
+            Do not modify anything unrelated to this Dockerfile update.
+          claude_args: |
+            --model us.anthropic.claude-opus-4-6-v1
+            --dangerously-skip-permissions
